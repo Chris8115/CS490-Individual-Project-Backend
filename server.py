@@ -317,5 +317,144 @@ def rent_film():
   conn.close()
   return jsonify({"message": "Film rented successfully", "rental_id": rental_id})
 
+@app.route('/customers', methods=['GET'])
+def get_customers():
+    conn = mysql.connector.connect(**db_config)
+    cursor = conn.cursor(dictionary=True)
+    
+    query = """
+    SELECT customer_id, store_id, first_name, last_name, email, active, create_date
+    FROM customer
+    ORDER BY customer_id
+    """
+    
+    cursor.execute(query)
+    customers = cursor.fetchall()
+    
+    cursor.close()
+    conn.close()
+    
+    return jsonify(customers)
+
+
+
+@app.route('/customers/search', methods=['GET'])
+def search_customers():
+    search_type = request.args.get('type')
+    query_param = request.args.get('query')
+
+    if not search_type or not query_param:
+        return jsonify([])
+
+    conn = mysql.connector.connect(**db_config)
+    cursor = conn.cursor(dictionary=True)
+
+    sql = ""
+    if search_type == "customer_id":
+        sql = "SELECT customer_id, first_name, last_name, email FROM customer WHERE customer_id = %s"
+        cursor.execute(sql, (query_param,))
+    elif search_type == "first_name":
+        sql = "SELECT customer_id, first_name, last_name, email FROM customer WHERE first_name LIKE %s"
+        cursor.execute(sql, ('%' + query_param + '%',))
+    elif search_type == "last_name":
+        sql = "SELECT customer_id, first_name, last_name, email FROM customer WHERE last_name LIKE %s"
+        cursor.execute(sql, ('%' + query_param + '%',))
+
+    customers = cursor.fetchall()
+    cursor.close()
+    conn.close()
+
+    return jsonify(customers)
+
+@app.route('/customers/add', methods=['POST'])
+def add_customer():
+    data = request.get_json()
+    first_name = data.get('first_name')
+    last_name = data.get('last_name')
+    email = data.get('email')
+    store_id = data.get('store_id')
+    address_id = data.get('address_id')
+
+    if not first_name or not last_name or not email or not store_id or not address_id:
+        return jsonify({"error": "Missing required fields"}), 400
+
+    conn = mysql.connector.connect(**db_config)
+    cursor = conn.cursor(dictionary=True)
+
+    insert_query = """
+    INSERT INTO customer (store_id, first_name, last_name, email, address_id, create_date)
+    VALUES (%s, %s, %s, %s, %s, NOW())
+    """
+    cursor.execute(insert_query, (store_id, first_name, last_name, email, address_id))
+    conn.commit()
+    new_customer_id = cursor.lastrowid
+
+    cursor.execute("SELECT customer_id, store_id, first_name, last_name, email, address_id FROM customer WHERE customer_id = %s", (new_customer_id,))
+    new_customer = cursor.fetchone()
+
+    cursor.close()
+    conn.close()
+
+    return jsonify(new_customer)
+
+@app.route('/edit_customer/<int:customer_id>', methods=['PUT'])
+def edit_customer(customer_id):
+    data = request.get_json()
+    
+    conn = mysql.connector.connect(**db_config)
+    cursor = conn.cursor()
+
+    update_query = """
+    UPDATE customer
+    SET store_id = %s, first_name = %s, last_name = %s, email = %s, active = %s
+    WHERE customer_id = %s
+    """
+    
+    cursor.execute(update_query, (
+        data['store_id'],
+        data['first_name'],
+        data['last_name'],
+        data['email'],
+        int(data['active']),
+        customer_id
+    ))
+
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+    return jsonify({"message": "Customer updated successfully"})
+
+@app.route('/delete_customer/<int:customer_id>', methods=['DELETE'])
+def delete_customer(customer_id):
+    conn = mysql.connector.connect(**db_config)
+    cursor = conn.cursor()
+
+    try:
+        # Delete related payments first (to avoid FK errors)
+        cursor.execute("DELETE FROM payment WHERE customer_id = %s", (customer_id,))
+
+        # Delete related rentals if cascade isn't enabled
+        cursor.execute("DELETE FROM rental WHERE customer_id = %s", (customer_id,))
+
+        # Delete customer after related records are gone
+        cursor.execute("DELETE FROM customer WHERE customer_id = %s", (customer_id,))
+
+        conn.commit()
+        cursor.close()
+        conn.close()
+        return jsonify({"message": "Customer deleted successfully"}), 200
+
+    except mysql.connector.Error as err:
+        conn.rollback() 
+        cursor.close()
+        conn.close()
+        print(f"Error deleting customer: {str(err)}") 
+        return jsonify({"error": f"Error deleting customer: {str(err)}"}), 500
+
+
+
+
+
 if __name__ == "__main__":
   app.run(debug=True)
