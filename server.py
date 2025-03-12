@@ -83,12 +83,10 @@ def return_film():
   data = request.get_json()
   rental_id_input = data.get('rental_id')
   customer_id = data.get('customer_id')
-  film_id = data.get('film_id')  # Optional
+  film_id = data.get('film_id')
   
-  # If rental_id is not "0" or empty, use it; otherwise, treat as not provided.
   rental_id = rental_id_input if rental_id_input and str(rental_id_input).strip() not in ["", "0"] else None
   
-  # If no rental_id and no customer_id provided, return error.
   if rental_id is None and (customer_id is None or str(customer_id).strip() == ""):
     return jsonify({"error": "Missing rental_id or customer_id"}), 400
   
@@ -97,7 +95,6 @@ def return_film():
   conn = mysql.connector.connect(**db_config)
   cursor = conn.cursor()
   
-  # If a valid rental_id is provided, update that record.
   if rental_id:
     update_query = """
       UPDATE rental
@@ -115,7 +112,6 @@ def return_film():
     conn.close()
     return jsonify({"message": "Film returned successfully", "rental_id": rental_id})
   
-  # If customer_id is "0", return all active rentals.
   elif customer_str == "0":
     update_query = """
       UPDATE rental
@@ -132,7 +128,6 @@ def return_film():
       "returned_count": affected
     })
   
-  # Otherwise, return the oldest active rental for the given customer (and film if provided)
   else:
     customer_id_val = int(customer_id)
     if film_id:
@@ -227,7 +222,6 @@ def search_films():
     conn = mysql.connector.connect(**db_config)
     cursor = conn.cursor(dictionary=True)
     
-    # Define the columns to return, qualified with alias "f"
     columns = """
       f.film_id, f.title, f.description, f.release_year,
       f.language_id, f.original_language_id, f.rental_duration,
@@ -323,7 +317,7 @@ def get_customers():
     cursor = conn.cursor(dictionary=True)
     
     query = """
-    SELECT customer_id, store_id, first_name, last_name, email, active, create_date
+    SELECT customer_id, store_id, first_name, last_name, email, address_id, active, create_date
     FROM customer
     ORDER BY customer_id
     """
@@ -335,6 +329,7 @@ def get_customers():
     conn.close()
     
     return jsonify(customers)
+
 
 
 
@@ -401,29 +396,37 @@ def add_customer():
 def edit_customer(customer_id):
     data = request.get_json()
     
+    required_fields = ["store_id", "first_name", "last_name", "email", "address_id", "active"]
+    for field in required_fields:
+        if field not in data:
+            return jsonify({"error": f"Missing field: {field}"}), 400
+    
     conn = mysql.connector.connect(**db_config)
     cursor = conn.cursor()
 
-    update_query = """
-    UPDATE customer
-    SET store_id = %s, first_name = %s, last_name = %s, email = %s, active = %s
-    WHERE customer_id = %s
-    """
-    
-    cursor.execute(update_query, (
-        data['store_id'],
-        data['first_name'],
-        data['last_name'],
-        data['email'],
-        int(data['active']),
-        customer_id
-    ))
+    try:
+        query = """
+        UPDATE customer
+        SET store_id = %s, first_name = %s, last_name = %s, email = %s, address_id = %s, active = %s
+        WHERE customer_id = %s
+        """
+        cursor.execute(query, (
+            data["store_id"], data["first_name"], data["last_name"], data["email"],
+            data["address_id"], data["active"], customer_id
+        ))
 
-    conn.commit()
-    cursor.close()
-    conn.close()
+        conn.commit()
+        cursor.close()
+        conn.close()
 
-    return jsonify({"message": "Customer updated successfully"})
+        return jsonify({"message": "Customer updated successfully"}), 200
+
+    except mysql.connector.Error as err:
+        conn.rollback()
+        cursor.close()
+        conn.close()
+        return jsonify({"error": str(err)}), 500
+
 
 @app.route('/delete_customer/<int:customer_id>', methods=['DELETE'])
 def delete_customer(customer_id):
@@ -431,13 +434,10 @@ def delete_customer(customer_id):
     cursor = conn.cursor()
 
     try:
-        # Delete related payments first (to avoid FK errors)
         cursor.execute("DELETE FROM payment WHERE customer_id = %s", (customer_id,))
 
-        # Delete related rentals if cascade isn't enabled
         cursor.execute("DELETE FROM rental WHERE customer_id = %s", (customer_id,))
 
-        # Delete customer after related records are gone
         cursor.execute("DELETE FROM customer WHERE customer_id = %s", (customer_id,))
 
         conn.commit()
@@ -453,6 +453,26 @@ def delete_customer(customer_id):
         return jsonify({"error": f"Error deleting customer: {str(err)}"}), 500
 
 
+@app.route('/customer/<int:customer_id>/rental_history', methods=['GET'])
+def get_customer_rental_history(customer_id):
+    conn = mysql.connector.connect(**db_config)
+    cursor = conn.cursor(dictionary=True)
+
+    query = """
+    SELECT r.rental_id, f.title, r.rental_date, r.return_date
+    FROM rental r
+    JOIN inventory i ON r.inventory_id = i.inventory_id
+    JOIN film f ON i.film_id = f.film_id
+    WHERE r.customer_id = %s
+    ORDER BY r.rental_date DESC
+    """
+    cursor.execute(query, (customer_id,))
+    rental_history = cursor.fetchall()
+
+    cursor.close()
+    conn.close()
+
+    return jsonify(rental_history)
 
 
 
